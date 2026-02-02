@@ -2,9 +2,15 @@ import os
 import logging
 from typing import Dict
 from dotenv import load_dotenv
+from tavily import TavilyClient
+
 
 # Load environment variables
 load_dotenv()
+
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
+
 
 # Configure logging
 logging.basicConfig(
@@ -24,6 +30,34 @@ from memory import PersistentHybridMemory
 # Import OpenRouter client
 import requests
 import json
+
+
+def tavily_search(query: str, max_results: int = 5) -> str:
+    """Fetch web context using Tavily for RAG"""
+    if not TAVILY_API_KEY:
+        return ""
+
+    try:
+        response = tavily_client.search(
+            query=query,
+            max_results=max_results,
+            search_depth="basic"
+        )
+
+        if not response.get("results"):
+            return ""
+
+        context = "Web search results:\n"
+        for i, r in enumerate(response["results"], 1):
+            context += f"{i}. {r['title']}\n{r['content']}\n"
+
+        return context
+
+    except Exception as e:
+        logger.error(f"Tavily search failed: {e}")
+        return ""
+
+
 
 # ========== OPENROUTER CLIENT ==========
 class OpenRouterClient:
@@ -133,19 +167,40 @@ class TelegramBotWithDatabaseMemory:
             
             # Get memory context
             memory_context = memory.get_context()
+
+            # 🔍 RAG: Web search context
+            rag_context = tavily_search(user_message)
+
+            # Combine RAG + memory
+            combined_context = ""
+            if rag_context:
+                combined_context += rag_context + "\n\n"
+                combined_context += memory_context
+
+
+
+
             
             # Verbose logging (as requested)
             print(f"\n{'='*60}")
             print("🤖 CONVERSATION CHAIN (verbose=True)")
             print(f"{'='*60}")
-            print(f"Memory context:\n{memory_context}")
-            print(f"\nHuman input: {user_message}")
+
+            print("🧠 MEMORY CONTEXT:")
+            print(memory_context if memory_context else "No memory available")
+
+            print(f"\n🌐 RAG (Web Search) CONTEXT:")
+            print(rag_context if rag_context else "No web search used")
+
+            print(f"\n👤 HUMAN INPUT:")
+            print(user_message)
+
             print(f"{'='*60}")
             
             # Get response from OpenRouter
             response = self.llm.generate_response(
                 prompt=user_message,
-                memory_context=memory_context,
+                memory_context=combined_context,
                 temperature=float(os.getenv("LLM_TEMPERATURE", "0.7"))
             )
             
