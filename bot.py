@@ -432,30 +432,36 @@ class TelegramBotWithDatabaseMemory:
 
         # ========== GMAIL INTEGRATION METHODS ==========
     
+    # Update the gmail_callback method in your bot.py:
+
     async def gmail_callback(self, email_data: dict):
-        """Callback function when new email arrives"""
+        """Callback function when NEW email arrives"""
         try:
             # Format notification message
             message = (
-                f"📧 NEW EMAIL RECEIVED\n\n"
-                f"👤 From: {email_data['from']}\n"
-                f"📧 Email: {email_data['sender_email']}\n"
-                f"📌 Subject: {email_data['subject']}\n"
-                f"📝 Preview: {email_data['preview']}\n\n"
-                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                f"📧 **NEW EMAIL RECEIVED**\n\n"
+                f"👤 **From:** {email_data['from']}\n"
+                f"📧 **Sender:** {email_data['sender_email']}\n"
+                f"📌 **Subject:** {email_data['subject']}\n"
+                f"📝 **Preview:** {email_data['preview']}\n"
+                f"⏰ **Received:** {email_data['date']}"
             )
-            
-            # Send to all admin users (you can customize this)
+        
+            # Send to all users who want email notifications
             # For now, send to the user who started monitoring
             if hasattr(self, 'gmail_monitor_user'):
-                await self.application.bot.send_message(
-                    chat_id=self.gmail_monitor_user,
-                    text=message
-                )
-                print(f"✅ Gmail notification sent to {self.gmail_monitor_user}")
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=self.gmail_monitor_user,
+                            text=message,
+                        parse_mode='Markdown'
+                    )
+                    print(f"✅ Gmail notification sent to {self.gmail_monitor_user}")
+                except Exception as send_error:
+                    print(f"❌ Failed to send Telegram message: {send_error}")
                 
         except Exception as e:
-            print(f"❌ Failed to send Gmail notification: {e}")
+            print(f"❌ Failed to process Gmail callback: {e}")
     
     async def gmail_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start Gmail monitoring"""
