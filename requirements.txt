@@ -5,3 +5,5 @@ langchain-community
 python-dotenv
 requests
 tavily-python
+
+psycopg2-binary

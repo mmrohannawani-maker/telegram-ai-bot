@@ -3,6 +3,7 @@ import logging
 from typing import Dict
 from dotenv import load_dotenv
 from tavily import TavilyClient
+import asyncio
 
 
 # Load environment variables
@@ -161,6 +162,9 @@ class TelegramBotWithDatabaseMemory:
             user_message = update.message.text
             
             logger.info(f"Message from {user_id}: {user_message}")
+
+
+            self.db.update_user_interaction(user_id)
             
             # Get user memory (auto-loads from DB)
             memory = self.get_user_memory(user_id)
@@ -217,14 +221,25 @@ class TelegramBotWithDatabaseMemory:
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start"""
+        user_id = str(update.effective_user.id)
+        username = update.effective_user.username
+        first_name = update.effective_user.first_name
+
+        self.db.save_user_for_notifications(user_id, username, first_name)
+       
+
         welcome = (
-            "🤖 Hello! I'm your AI assistant with memory!\n"
-            "I remember our conversations in a database.\n\n"
+            "🤖 Hello! I'm your AI assistant with persistent memory!\n"
+            "I remember our conversations in PostgreSQL database.\n\n"
             "Commands:\n"
-            "/start - Show this\n"
+            "/start - Register for notifications\n"
             "/clear - Clear memory\n"
             "/memory - Show memory stats\n"
-            "/dbstats - Show database stats"
+            "/dbstats - Show database stats\n"
+            "/notify [message] - Send notification (admin)\n"
+            "/migrate - Migrate existing users (admin)\n"  # ← ADD THIS LINE
+            "/test_notify - Test notification\n"
+            "/stats - Show notification stats"
         )
         await update.message.reply_text(welcome)
     
@@ -263,20 +278,56 @@ class TelegramBotWithDatabaseMemory:
         )
         await update.message.reply_text(response)
     
+    async def migrate_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Migrate existing users to notifications table"""
+        user_id = str(update.effective_user.id)
+        
+        # REPLACE THIS WITH YOUR ACTUAL TELEGRAM USER ID
+        # You can find it by sending /start then checking logs or using /stats command
+        # if user_id != "YOUR_ADMIN_TELEGRAM_ID":  # ← REPLACE THIS
+        #     await update.message.reply_text("❌ Admin only.")
+        #     return
+        
+        await update.message.reply_text("🔄 Migrating existing users...")
+        migrated = self.db.migrate_existing_users()
+        await update.message.reply_text(f"✅ Migrated {migrated} users to notifications system.")
+
+    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show notification stats and your user ID"""
+        user_count = self.db.get_user_count()
+        
+        response = (
+            f"📊 Notification Stats:\n"
+            f"• Total users: {user_count}\n"
+            f"• Your User ID: {update.effective_user.id}\n"  # ← This shows your ID
+            f"• Your Username: {update.effective_user.username}"
+        )
+        await update.message.reply_text(response)
+
+
     def run(self):
         """Start the bot"""
         try:
             application = Application.builder().token(self.bot_token).build()
             
-            # Add command handlers
+             # Add command handlers
             application.add_handler(CommandHandler("start", self.start_command))
             application.add_handler(CommandHandler("clear", self.clear_command))
             application.add_handler(CommandHandler("memory", self.memory_command))
             application.add_handler(CommandHandler("dbstats", self.dbstats_command))
             
+            # ✅ ADD THESE NEW COMMAND HANDLERS:
+            application.add_handler(CommandHandler("stats", self.stats_command))
+            application.add_handler(CommandHandler("test_notify", self.test_notify_command))
+            application.add_handler(CommandHandler("notify", self.broadcast_notification))
+            application.add_handler(CommandHandler("migrate", self.migrate_command))
+
+
             # Add message handler
             application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
             
+            #application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+
             # Start
             logger.info("Starting bot...")
             print("\n" + "="*60)

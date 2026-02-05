@@ -1,16 +1,7 @@
-# Environment variables
-.env
-
-# Python
-__pycache__/
-*.pyc
-
-# Virtual env
-my_env/
-venv/
-
-# Databases
-*.db
-
-# OS
-.DS_Store
+# Add these to your existing .gitignore:
+*.db              # SQLite database files
+.env              # Environment variables
+.env.local        # Local environment overrides
+test_*.db         # Test database files
+__pycache__/      # Python cache (you already have)
+my_env/           # Virtual environment (you already have)
