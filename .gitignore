@@ -1,7 +1,13 @@
 # Add these to your existing .gitignore:
-*.db              # SQLite database files
-.env              # Environment variables
-.env.local        # Local environment overrides
-test_*.db         # Test database files
-__pycache__/      # Python cache (you already have)
-my_env/           # Virtual environment (you already have)
+*.db              
+.env              
+.env.local        
+test_*.db         
+__pycache__/      
+my_env/           
+.env
+*.db
+*.sqlite
+__pycache__/
+*.pyc
+my_env/
