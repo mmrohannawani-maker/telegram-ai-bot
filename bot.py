@@ -4,6 +4,9 @@ from typing import Dict
 from dotenv import load_dotenv
 from tavily import TavilyClient
 import asyncio
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from datetime import datetime
 
 
 # Load environment variables
@@ -139,6 +142,10 @@ class TelegramBotWithDatabaseMemory:
             model=os.getenv("OPENROUTER_MODEL", "mistralai/mistral-small-3.2-24b-instruct")
         )
         
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        from datetime import datetime
+
         # User memory storage
         self.user_memories: Dict[str, PersistentHybridMemory] = {}
         
@@ -167,18 +174,21 @@ class TelegramBotWithDatabaseMemory:
         self.db.save_user_for_notifications(user_id, username, first_name)
         
         welcome = (
-            "🤖 Hello! I'm your AI assistant with memory!\n"
-            "I remember our conversations and can send you notifications.\n\n"
-            "📋 Commands:\n"
-            "/start - Register for notifications\n"
-            "/clear - Clear memory\n"
-            "/memory - Show memory stats\n"
-            "/dbstats - Show database stats\n"
-            "/stats - Show notification stats\n"
-            "/test_notify - Test notification\n"
-            "/notify [message] - Send notification\n"
-            "/migrate - Migrate existing users"
-        )
+    "🤖 Hello! I'm your AI assistant with memory!\n"
+    "I remember our conversations and can send you notifications.\n\n"
+    "📋 Commands:\n"
+    "/start - Register for notifications\n"
+    "/start_notifications - Start receiving notifications every minute\n"
+    "/stop_notifications - Stop notifications\n"
+    "/notification_status - Check notification status\n"
+    "/test_notify - Test notification\n"
+    "/notify [message] - Send one-time notification\n"
+    "/clear - Clear memory\n"
+    "/memory - Show memory stats\n"
+    "/stats - Show notification stats\n"
+    "/dbstats - Show database stats\n"
+    "/migrate - Migrate existing users"
+)
         await update.message.reply_text(welcome)
     
     async def test_notify_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -249,7 +259,169 @@ class TelegramBotWithDatabaseMemory:
             f"• Your User ID: {update.effective_user.id}"
         )
         await update.message.reply_text(response)
+
+         # ✅ ADD SCHEDULED NOTIFICATION METHODS RIGHT HERE (BEFORE handle_message):
+
+    async def send_scheduled_notification(self, user_id: str, message: str = None):
+        """Send scheduled notification to a specific user"""
+        try:
+            if not message:
+                # Default notification message
+                message = "⏰ Scheduled reminder from your AI assistant!"
+            
+            await self.application.bot.send_message(
+                chat_id=user_id,
+                text=f"🔔 {message}\n\nTime: {datetime.now().strftime('%H:%M:%S')}"
+            )
+            logger.info(f"Scheduled notification sent to {user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send scheduled notification to {user_id}: {e}")
+            return False
+        
+    async def start_notifications_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start sending notifications every minute"""
+        user_id = str(update.effective_user.id)
+        
+        # Check if already running for this user
+        if user_id in self.notification_jobs:
+            await update.message.reply_text("⏰ Notifications are already running for you!")
+            return
+        
+        # Get custom message if provided
+        message = " ".join(context.args) if context.args else None
+        
+        # Create job for this user
+        job_id = f"user_{user_id}_notifications"
+        
+        # Add job to scheduler (every 60 seconds)
+        job = self.scheduler.add_job(
+            self.send_scheduled_notification,
+            IntervalTrigger(seconds=60),
+            args=[user_id, message],
+            id=job_id,
+            replace_existing=True
+        )
+        
+        # Store job reference
+        self.notification_jobs[user_id] = job_id
+        self.active_notifications = True
+        
+        # Start scheduler if not already running
+        if not self.scheduler.running:
+            self.scheduler.start()
+            logger.info("Notification scheduler started")
+        
+        await update.message.reply_text(
+            f"✅ Notifications started!\n"
+            f"• Will send every minute\n"
+            f"• Use /stop_notifications to stop\n"
+            f"• First notification in 60 seconds..."
+        )
+        
+        # Send first notification immediately
+        await self.send_scheduled_notification(user_id, message)
+        logger.info(f"Started scheduled notifications for user {user_id}")
+
+
+
+    async def stop_notifications_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Stop scheduled notifications for this user"""
+        user_id = str(update.effective_user.id)
+        
+        if user_id not in self.notification_jobs:
+            await update.message.reply_text("❌ You don't have any active notifications to stop.")
+            return
+        
+        # Remove the job
+        job_id = self.notification_jobs[user_id]
+        self.scheduler.remove_job(job_id)
+        
+        # Remove from tracking
+        del self.notification_jobs[user_id]
+        
+        # Stop scheduler if no more jobs
+        if not self.notification_jobs and self.scheduler.running:
+            self.scheduler.shutdown()
+            self.active_notifications = False
+            logger.info("Notification scheduler stopped (no more jobs)")
+        
+        await update.message.reply_text(
+            "🛑 Notifications stopped!\n"
+            "You will no longer receive scheduled notifications."
+        )
+        logger.info(f"Stopped scheduled notifications for user {user_id}")
+
+
+    async def notification_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Check notification status"""
+        user_id = str(update.effective_user.id)
+        
+        if user_id in self.notification_jobs:
+            status = "✅ ACTIVE - You're receiving notifications every minute"
+        else:
+            status = "❌ INACTIVE - Use /start_notifications to begin"
+        
+        response = (
+            f"📊 Your Notification Status:\n"
+            f"{status}\n\n"
+            f"🔧 Commands:\n"
+            f"/start_notifications [message] - Start (optional custom message)\n"
+            f"/stop_notifications - Stop\n"
+            f"/notification_status - Check status\n\n"
+            f"Total users with active notifications: {len(self.notification_jobs)}"
+        )
+        
+        await update.message.reply_text(response)
     
+    async def broadcast_scheduled_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start scheduled notifications for ALL users (admin)"""
+        # Optional admin check (uncomment if needed)
+        # user_id = str(update.effective_user.id)
+        # if user_id != "YOUR_ADMIN_ID":
+        #     await update.message.reply_text("❌ Admin only.")
+        #     return
+        
+        if not context.args:
+            await update.message.reply_text("Usage: /broadcast_scheduled [message]")
+            return
+        
+        message = " ".join(context.args)
+        user_ids = self.db.get_all_users_for_notifications()
+        
+        if not user_ids:
+            await update.message.reply_text("No users registered for notifications.")
+            return
+        
+        await update.message.reply_text(f"⏰ Starting scheduled notifications for {len(user_ids)} users...")
+        
+        started_count = 0
+        for user_id in user_ids:
+            # Start notifications for each user
+            if user_id not in self.notification_jobs:
+                job_id = f"user_{user_id}_scheduled"
+                self.scheduler.add_job(
+                    self.send_scheduled_notification,
+                    IntervalTrigger(seconds=60),
+                    args=[user_id, message],
+                    id=job_id,
+                    replace_existing=True
+                )
+                self.notification_jobs[user_id] = job_id
+                started_count += 1
+        
+        # Start scheduler if not already running
+        if not self.scheduler.running:
+            self.scheduler.start()
+            self.active_notifications = True
+        
+        await update.message.reply_text(
+            f"✅ Started scheduled notifications!\n"
+            f"• Users: {started_count}\n"
+            f"• Interval: Every minute\n"
+            f"• Message: {message[:50]}..."
+        )
+
     # ========== EXISTING METHODS ==========
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -361,6 +533,12 @@ class TelegramBotWithDatabaseMemory:
             application.add_handler(CommandHandler("test_notify", self.test_notify_command))
             application.add_handler(CommandHandler("notify", self.broadcast_notification))
             application.add_handler(CommandHandler("migrate", self.migrate_command))
+
+            # ✅ ADD NEW NOTIFICATION COMMANDS:
+            application.add_handler(CommandHandler("start_notifications", self.start_notifications_command))
+            application.add_handler(CommandHandler("stop_notifications", self.stop_notifications_command))
+            application.add_handler(CommandHandler("notification_status", self.notification_status_command))
+            application.add_handler(CommandHandler("broadcast_scheduled", self.broadcast_scheduled_command))
             
             # Add message handler
             application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
@@ -375,6 +553,12 @@ class TelegramBotWithDatabaseMemory:
             print("Commands: /start, /stats, /test_notify, /notify, /migrate")
             print("Press Ctrl+C to stop")
             print("="*60)
+            print("✅ Commands available:")
+            print("   /start_notifications - Start per-user notifications")
+            print("   /stop_notifications - Stop your notifications")
+            print("   /notification_status - Check status")
+            print("   /broadcast_scheduled - Admin: Start for all users")
+            print("="*60)
             
             application.run_polling()
             
@@ -382,8 +566,12 @@ class TelegramBotWithDatabaseMemory:
             logger.error(f"Bot error: {e}")
         finally:
             # Cleanup
+            # Cleanup scheduler
+            if self.scheduler.running:
+                self.scheduler.shutdown()
+            # Cleanup database
             self.db.close()
-            
+
 def main():
     bot = TelegramBotWithDatabaseMemory()
     bot.run()

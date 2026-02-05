@@ -7,3 +7,5 @@ requests
 tavily-python
 
 psycopg2-binary
+
+apscheduler
