@@ -142,12 +142,14 @@ class TelegramBotWithDatabaseMemory:
             model=os.getenv("OPENROUTER_MODEL", "mistralai/mistral-small-3.2-24b-instruct")
         )
         
-        from apscheduler.schedulers.asyncio import AsyncIOScheduler
-        from apscheduler.triggers.interval import IntervalTrigger
-        from datetime import datetime
+        
 
         # User memory storage
         self.user_memories: Dict[str, PersistentHybridMemory] = {}
+
+        self.scheduler = AsyncIOScheduler()
+        self.notification_jobs: Dict[str, str] = {}  # user_id -> job_id
+        self.active_notifications = False
         
         logger.info("Bot initialized with database memory")
     
@@ -523,6 +525,8 @@ class TelegramBotWithDatabaseMemory:
         """Start the bot"""
         try:
             application = Application.builder().token(self.bot_token).build()
+
+            self.application = application
             
             # Add command handlers
             application.add_handler(CommandHandler("start", self.start_command))
