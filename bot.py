@@ -155,6 +155,103 @@ class TelegramBotWithDatabaseMemory:
             )
         return self.user_memories[user_id]
     
+    # ========== NOTIFICATION METHODS ==========
+    
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start"""
+        user_id = str(update.effective_user.id)
+        username = update.effective_user.username
+        first_name = update.effective_user.first_name
+
+        # Save user for notifications
+        self.db.save_user_for_notifications(user_id, username, first_name)
+        
+        welcome = (
+            "🤖 Hello! I'm your AI assistant with memory!\n"
+            "I remember our conversations and can send you notifications.\n\n"
+            "📋 Commands:\n"
+            "/start - Register for notifications\n"
+            "/clear - Clear memory\n"
+            "/memory - Show memory stats\n"
+            "/dbstats - Show database stats\n"
+            "/stats - Show notification stats\n"
+            "/test_notify - Test notification\n"
+            "/notify [message] - Send notification\n"
+            "/migrate - Migrate existing users"
+        )
+        await update.message.reply_text(welcome)
+    
+    async def test_notify_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send test notification to yourself"""
+        chat_id = update.effective_chat.id
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="🔔 Test notification successful!\nThis proves proactive messaging works."
+            )
+            logger.info(f"Test notification sent to {chat_id}")
+        except Exception as e:
+            logger.error(f"Failed to send test: {e}")
+            await update.message.reply_text("❌ Failed to send test notification")
+    
+    async def broadcast_notification(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Broadcast notification to all users"""
+        if not context.args:
+            await update.message.reply_text("Usage: /notify [message]")
+            return
+        
+        message = " ".join(context.args)
+        user_ids = self.db.get_all_users_for_notifications()
+        
+        if not user_ids:
+            await update.message.reply_text("No users registered for notifications.")
+            return
+        
+        await update.message.reply_text(f"📢 Sending notification to {len(user_ids)} users...")
+        
+        success_count = 0
+        fail_count = 0
+        
+        for user_id in user_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"📢 Announcement: {message}"
+                )
+                success_count += 1
+                await asyncio.sleep(0.1)  # Rate limiting
+            except Exception as e:
+                logger.error(f"Failed to send to {user_id}: {e}")
+                fail_count += 1
+        
+        await update.message.reply_text(
+            f"✅ Notification sent!\n"
+            f"Successful: {success_count}\n"
+            f"Failed: {fail_count}"
+        )
+    
+    async def migrate_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Migrate existing users to notifications table"""
+        await update.message.reply_text("🔄 Migrating existing users...")
+        migrated = self.db.migrate_existing_users()
+        await update.message.reply_text(f"✅ Migrated {migrated} users to notifications system.")
+    
+    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show notification stats"""
+        stats = self.db.get_database_stats()
+        
+        response = (
+            f"📊 Notification Stats:\n"
+            f"• Database: {stats.get('database_type', 'Unknown')}\n"
+            f"• Total users: {stats.get('total_users', 0)}\n"
+            f"• Notification users: {stats.get('notification_users', 0)}\n"
+            f"• Total messages: {stats.get('total_messages', 0)}\n"
+            f"• Your User ID: {update.effective_user.id}"
+        )
+        await update.message.reply_text(response)
+    
+    # ========== EXISTING METHODS ==========
+    
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming messages"""
         try:
@@ -163,7 +260,7 @@ class TelegramBotWithDatabaseMemory:
             
             logger.info(f"Message from {user_id}: {user_message}")
 
-
+            # Update user interaction time
             self.db.update_user_interaction(user_id)
             
             # Get user memory (auto-loads from DB)
@@ -181,11 +278,7 @@ class TelegramBotWithDatabaseMemory:
                 combined_context += rag_context + "\n\n"
                 combined_context += memory_context
 
-
-
-
-            
-            # Verbose logging (as requested)
+            # Verbose logging
             print(f"\n{'='*60}")
             print("🤖 CONVERSATION CHAIN (verbose=True)")
             print(f"{'='*60}")
@@ -219,30 +312,6 @@ class TelegramBotWithDatabaseMemory:
             logger.error(f"Error: {e}")
             await update.message.reply_text("Sorry, I encountered an error. Please try again.")
     
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start"""
-        user_id = str(update.effective_user.id)
-        username = update.effective_user.username
-        first_name = update.effective_user.first_name
-
-        self.db.save_user_for_notifications(user_id, username, first_name)
-       
-
-        welcome = (
-            "🤖 Hello! I'm your AI assistant with persistent memory!\n"
-            "I remember our conversations in PostgreSQL database.\n\n"
-            "Commands:\n"
-            "/start - Register for notifications\n"
-            "/clear - Clear memory\n"
-            "/memory - Show memory stats\n"
-            "/dbstats - Show database stats\n"
-            "/notify [message] - Send notification (admin)\n"
-            "/migrate - Migrate existing users (admin)\n"  # ← ADD THIS LINE
-            "/test_notify - Test notification\n"
-            "/stats - Show notification stats"
-        )
-        await update.message.reply_text(welcome)
-    
     async def clear_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /clear"""
         user_id = str(update.effective_user.id)
@@ -273,67 +342,37 @@ class TelegramBotWithDatabaseMemory:
             f"📊 Database Stats:\n"
             f"• Total users: {db_stats.get('total_users', 0)}\n"
             f"• Total messages: {db_stats.get('total_messages', 0)}\n"
-            f"• Total memories: {db_stats.get('total_memories', 0)}\n"
-            f"• Database file: {db_stats.get('database_file', 'bot_memory.db')}"
+            f"• Notification users: {db_stats.get('notification_users', 0)}\n"
+            f"• Database type: {db_stats.get('database_type', 'Unknown')}"
         )
         await update.message.reply_text(response)
     
-    async def migrate_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Migrate existing users to notifications table"""
-        user_id = str(update.effective_user.id)
-        
-        # REPLACE THIS WITH YOUR ACTUAL TELEGRAM USER ID
-        # You can find it by sending /start then checking logs or using /stats command
-        # if user_id != "YOUR_ADMIN_TELEGRAM_ID":  # ← REPLACE THIS
-        #     await update.message.reply_text("❌ Admin only.")
-        #     return
-        
-        await update.message.reply_text("🔄 Migrating existing users...")
-        migrated = self.db.migrate_existing_users()
-        await update.message.reply_text(f"✅ Migrated {migrated} users to notifications system.")
-
-    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show notification stats and your user ID"""
-        user_count = self.db.get_user_count()
-        
-        response = (
-            f"📊 Notification Stats:\n"
-            f"• Total users: {user_count}\n"
-            f"• Your User ID: {update.effective_user.id}\n"  # ← This shows your ID
-            f"• Your Username: {update.effective_user.username}"
-        )
-        await update.message.reply_text(response)
-
-
     def run(self):
         """Start the bot"""
         try:
             application = Application.builder().token(self.bot_token).build()
             
-             # Add command handlers
+            # Add command handlers
             application.add_handler(CommandHandler("start", self.start_command))
             application.add_handler(CommandHandler("clear", self.clear_command))
             application.add_handler(CommandHandler("memory", self.memory_command))
             application.add_handler(CommandHandler("dbstats", self.dbstats_command))
-            
-            # ✅ ADD THESE NEW COMMAND HANDLERS:
             application.add_handler(CommandHandler("stats", self.stats_command))
             application.add_handler(CommandHandler("test_notify", self.test_notify_command))
             application.add_handler(CommandHandler("notify", self.broadcast_notification))
             application.add_handler(CommandHandler("migrate", self.migrate_command))
-
-
+            
             # Add message handler
             application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
             
-            #application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-
             # Start
             logger.info("Starting bot...")
             print("\n" + "="*60)
-            print("🤖 Telegram Bot with Database Memory")
+            print("🤖 Telegram Bot with Database Memory & Notifications")
             print("="*60)
-            print("Database: bot_memory.db")
+            print("Database: Auto (SQLite local / PostgreSQL Railway)")
+            print("Notification system: ✅ ACTIVE")
+            print("Commands: /start, /stats, /test_notify, /notify, /migrate")
             print("Press Ctrl+C to stop")
             print("="*60)
             
@@ -344,7 +383,7 @@ class TelegramBotWithDatabaseMemory:
         finally:
             # Cleanup
             self.db.close()
-
+            
 def main():
     bot = TelegramBotWithDatabaseMemory()
     bot.run()
