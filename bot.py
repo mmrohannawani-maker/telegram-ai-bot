@@ -513,18 +513,18 @@ class TelegramBotWithDatabaseMemory:
         "Use /gmail_stop to stop monitoring."
         )
 
-    async def _start_gmail_monitoring(self):
-        """Start pure event-based Gmail monitoring"""
+    async def _start_pure_event_monitoring(self):
+        """Start pure event-based monitoring"""
         try:
-            # Use the pure event-based monitor_idle method
-            await self.gmail_watcher.monitor_idle(self.gmail_callback)
+            # Use the pure event-based method
+            await self.gmail_watcher.monitor_pure_event(self.gmail_callback)
         except Exception as e:
             logger.error(f"Gmail monitoring stopped: {e}")
             if hasattr(self, 'gmail_monitor_user'):
                 try:
                     await self.application.bot.send_message(
                     chat_id=self.gmail_monitor_user,
-                    text=f"❌ Gmail monitoring stopped: {str(e)}"
+                    text="❌ Gmail monitoring stopped unexpectedly"
                     )
                 except:
                     pass
@@ -587,6 +587,19 @@ class TelegramBotWithDatabaseMemory:
             await update.message.reply_text(response, parse_mode='Markdown')
         else:
             await update.message.reply_text("❌ Failed to connect to Gmail.")
+
+
+    async def gmail_stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Stop Gmail monitoring"""
+        if not self.gmail_watcher:
+            await update.message.reply_text("❌ Gmail monitoring is not running.")
+            return
+    
+        self.gmail_watcher.running = False
+        await asyncio.sleep(1)  # Let it clean up
+    
+        await update.message.reply_text("🛑 Gmail monitoring stopped.")
+        logger.info("Gmail monitoring stopped by user")
 
     # ========== EXISTING METHODS CONTINUE BELOW ==========
     # Your existing handle_message, clear_command, etc. continue here...
