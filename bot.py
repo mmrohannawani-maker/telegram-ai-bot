@@ -8,6 +8,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime
 from gmail_imap import GmailIMAPWatcher
+# Update this line at the top
+from gmail_imap import GmailIMAPWatcher  # Remove any GmailRealtimeWatcher imports
 
 
 
@@ -434,151 +436,158 @@ class TelegramBotWithDatabaseMemory:
     
     # Update the gmail_callback method in your bot.py:
 
+# ========== GMAIL INTEGRATION METHODS ==========
+
     async def gmail_callback(self, email_data: dict):
-        """Callback function when NEW email arrives"""
+        """Callback function when new email arrives"""
         try:
             # Format notification message
+            attachments_note = "📎 (Has attachments)" if email_data.get('has_attachments') else ""
+        
             message = (
-                f"📧 **NEW EMAIL RECEIVED**\n\n"
-                f"👤 **From:** {email_data['from']}\n"
-                f"📧 **Sender:** {email_data['sender_email']}\n"
-                f"📌 **Subject:** {email_data['subject']}\n"
-                f"📝 **Preview:** {email_data['preview']}\n"
-                f"⏰ **Received:** {email_data['date']}"
+            f"📧 **INSTANT EMAIL NOTIFICATION**\n\n"
+            f"👤 **From:** {email_data['from']}\n"
+            f"📧 **Email:** {email_data['sender_email']}\n"
+            f"📌 **Subject:** {email_data['subject']}\n"
+            f"📝 **Preview:** {email_data['preview']}\n"
+            f"⏰ **Time:** {email_data['date']}\n"
+            f"{attachments_note}"
             )
         
-            # Send to all users who want email notifications
-            # For now, send to the user who started monitoring
+            # Send to the user who started monitoring
             if hasattr(self, 'gmail_monitor_user'):
                 try:
                     await self.application.bot.send_message(
                         chat_id=self.gmail_monitor_user,
-                            text=message,
+                        text=message,
                         parse_mode='Markdown'
                     )
-                    print(f"✅ Gmail notification sent to {self.gmail_monitor_user}")
+                    logger.info(f"✅ INSTANT email notification sent to {self.gmail_monitor_user}")
                 except Exception as send_error:
-                    print(f"❌ Failed to send Telegram message: {send_error}")
-                
+                    logger.error(f"❌ Failed to send Telegram message: {send_error}")
         except Exception as e:
-            print(f"❌ Failed to process Gmail callback: {e}")
-    
+            logger.error(f"❌ Failed to process Gmail callback: {e}")
+
     async def gmail_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start Gmail monitoring"""
+        """Start PURE EVENT-BASED Gmail monitoring"""
         user_id = str(update.effective_user.id)
-        
+    
         # Check if already running
-        if self.gmail_watcher and self.gmail_watcher.running:
+        if self.gmail_watcher and hasattr(self.gmail_watcher, 'running') and self.gmail_watcher.running:
             await update.message.reply_text("⚠️ Gmail monitoring is already running!")
             return
-        
+    
         # Get credentials from environment
         gmail_email = os.getenv("GMAIL_EMAIL")
         gmail_password = os.getenv("GMAIL_APP_PASSWORD")
-        
+    
         if not gmail_email or not gmail_password:
             await update.message.reply_text(
-                "❌ Gmail not configured.\n\n"
-                "To enable Gmail monitoring:\n"
-                "1. Go to Railway → Variables\n"
-                "2. Add:\n"
-                "   • GMAIL_EMAIL=your@gmail.com\n"
-                "   • GMAIL_APP_PASSWORD=your-16char-password\n\n"
-                "Get app password from:\n"
-                "Google Account → Security → App passwords"
+            "❌ Gmail not configured.\n\n"
+            "To enable Gmail monitoring:\n"
+            "1. Add to .env:\n"
+            "   GMAIL_EMAIL=your@gmail.com\n"
+            "   GMAIL_APP_PASSWORD=your-app-password\n\n"
+            "Get app password from:\n"
+            "Google Account → Security → App passwords"
             )
             return
-        
-        await update.message.reply_text("🔍 Connecting to Gmail...")
-        
+    
+        await update.message.reply_text("🚀 Starting PURE EVENT-BASED Gmail monitoring...")
+    
         # Create Gmail watcher
         self.gmail_watcher = GmailIMAPWatcher(gmail_email, gmail_password)
-        
+    
         # Store which user to notify
         self.gmail_monitor_user = user_id
-        
-        # Start monitoring in background
+    
+        # Start PURE EVENT-BASED monitoring in background
         asyncio.create_task(self._start_gmail_monitoring())
-        
+    
         await update.message.reply_text(
-            "✅ Gmail monitoring started!\n"
-            "I'll notify you of new emails every minute."
+        "✅ **PURE EVENT-BASED Gmail monitoring started!**\n\n"
+        "🔔 *True instant notifications*\n"
+        "📧 Using IMAP IDLE protocol\n"
+        "⏰ No polling intervals\n"
+        "⚡ Notifies INSTANTLY when email arrives\n\n"
+        "Use /gmail_stop to stop monitoring."
         )
-    
+
     async def _start_gmail_monitoring(self):
-        """Start Gmail monitoring loop"""
+        """Start pure event-based Gmail monitoring"""
         try:
-            await self.gmail_watcher.monitor_loop(
-                callback_func=self.gmail_callback,
-                check_interval=60  # Check every 60 seconds
-            )
+            # Use the pure event-based monitor_idle method
+            await self.gmail_watcher.monitor_idle(self.gmail_callback)
         except Exception as e:
-            print(f"Gmail monitoring stopped: {e}")
-    
-    async def gmail_stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stop Gmail monitoring"""
-        if not self.gmail_watcher:
-            await update.message.reply_text("❌ Gmail monitoring is not running.")
-            return
-        
-        self.gmail_watcher.running = False
-        self.gmail_watcher.disconnect()
-        self.gmail_watcher = None
-        
-        await update.message.reply_text("🛑 Gmail monitoring stopped.")
-    
+            logger.error(f"Gmail monitoring stopped: {e}")
+            if hasattr(self, 'gmail_monitor_user'):
+                try:
+                    await self.application.bot.send_message(
+                    chat_id=self.gmail_monitor_user,
+                    text=f"❌ Gmail monitoring stopped: {str(e)}"
+                    )
+                except:
+                    pass
+
+
+
     async def gmail_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Check Gmail status"""
-        if self.gmail_watcher and self.gmail_watcher.running:
-            status = "✅ ACTIVE - Monitoring your Gmail"
+        if self.gmail_watcher and hasattr(self.gmail_watcher, 'running') and self.gmail_watcher.running:
+            status = "✅ **ACTIVE** - REAL-TIME monitoring enabled\n🔔 Instant notifications"
         else:
-            status = "❌ INACTIVE - Use /gmail_start to begin"
-        
-        response = (
-            f"📧 Gmail Monitor Status:\n"
-            f"{status}\n\n"
-            f"🔧 Commands:\n"
-            f"/gmail_start - Start monitoring\n"
-            f"/gmail_stop - Stop monitoring\n"
-            f"/gmail_status - Check status\n"
-            f"/check_email - Manual check"
-        )
-        
-        await update.message.reply_text(response)
+            status = "❌ **INACTIVE** - Use /gmail_start to begin"
     
+        response = (
+        f"📧 **Gmail Monitor Status**\n"
+        f"{status}\n\n"
+        f"🔧 **Commands:**\n"
+        f"/gmail_start - Start REAL-TIME monitoring\n"
+        f"/gmail_stop - Stop monitoring\n"
+        f"/gmail_status - Check status\n"
+        f"/check_email - Manual check"
+        )
+    
+        await update.message.reply_text(response, parse_mode='Markdown')
+
     async def check_email_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Manually check for new emails"""
         gmail_email = os.getenv("GMAIL_EMAIL")
         gmail_password = os.getenv("GMAIL_APP_PASSWORD")
-        
+    
         if not gmail_email or not gmail_password:
             await update.message.reply_text("❌ Gmail not configured.")
             return
-        
-        await update.message.reply_text("📬 Checking for new emails...")
-        
+    
+        await update.message.reply_text("📬 Manual check for new emails...")
+    
         # Create temporary watcher
         watcher = GmailIMAPWatcher(gmail_email, gmail_password)
+    
+        if await watcher.connect():
+            # Setup database
+            await watcher.setup_database()
         
-        if watcher.connect():
-            emails = watcher.get_unread_emails(max_results=5)
-            watcher.disconnect()
-            
-            if not emails:
-                await update.message.reply_text("📭 No new unread emails.")
+            # Check for new emails (last 1 hour)
+            new_emails = await watcher.check_for_new_emails()
+        
+            await watcher.disconnect()
+        
+            if not new_emails:
+                await update.message.reply_text("📭 No new emails found.")
                 return
-            
+        
             # Format response
-            response = f"📧 Unread Emails ({len(emails)}):\n\n"
-            for i, email in enumerate(emails, 1):
+            response = f"📧 **New Emails Found** ({len(new_emails)}):\n\n"
+            for i, email in enumerate(new_emails, 1):
                 response += f"{i}. **{email['sender_email']}**\n"
-                response += f"   Subject: {email['subject'][:50]}\n"
-                response += f"   Preview: {email['preview'][:80]}...\n\n"
-            
-            await update.message.reply_text(response)
+                response += f"   *Subject:* {email['subject'][:50]}\n"
+                response += f"   *Preview:* {email['preview'][:60]}...\n\n"
+        
+            await update.message.reply_text(response, parse_mode='Markdown')
         else:
             await update.message.reply_text("❌ Failed to connect to Gmail.")
-    
+
     # ========== EXISTING METHODS CONTINUE BELOW ==========
     # Your existing handle_message, clear_command, etc. continue here...
 
