@@ -532,6 +532,33 @@ class TelegramBotWithDatabaseMemory:
                 except:
                     pass
 
+    async def gmail_reset_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Reset Gmail monitoring to start from current emails"""
+        if self.gmail_watcher and hasattr(self.gmail_watcher, 'running') and self.gmail_watcher.running:
+            await update.message.reply_text("⚠️ Stop monitoring first with /gmail_stop")
+            return
+    
+        await update.message.reply_text("🔄 Resetting Gmail monitoring...")
+    
+        gmail_email = os.getenv("GMAIL_EMAIL")
+        gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+    
+        if not gmail_email or not gmail_password:
+            await update.message.reply_text("❌ Gmail not configured.")
+            return
+    
+        # Create new watcher
+        self.gmail_watcher = GmailIMAPWatcher(gmail_email, gmail_password)
+    
+        if self.gmail_watcher.reset_monitoring():
+            await update.message.reply_text(
+                "✅ **Gmail monitoring reset!**\n\n"
+                "📧 Monitoring will start from NOW\n"
+                "🔔 Future emails will be notified\n"
+                "⏰ Use /gmail_start to begin"
+            )
+        else:
+            await update.message.reply_text("❌ Failed to reset monitoring")
 
 
     async def gmail_stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -737,6 +764,8 @@ class TelegramBotWithDatabaseMemory:
             application.add_handler(CommandHandler("gmail_stop", self.gmail_stop_command))
             application.add_handler(CommandHandler("gmail_status", self.gmail_status_command))
             application.add_handler(CommandHandler("check_email", self.check_email_command))
+            application.add_handler(CommandHandler("gmail_reset", self.gmail_reset_command))
+
 
 
 

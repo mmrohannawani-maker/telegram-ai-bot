@@ -1,4 +1,4 @@
-# gmail_imap.py - 20-SECOND POLLING (NEW EMAILS ONLY)
+# gmail_imap.py - FIXED UID TRACKING
 import asyncio
 import imaplib
 import email
@@ -13,34 +13,40 @@ import logging
 logger = logging.getLogger(__name__)
 
 class GmailIMAPWatcher:
-    """Gmail watcher with 20-second polling for new emails only"""
+    """Gmail watcher with proper UID tracking"""
     
     def __init__(self, email_address: str, app_password: str):
         self.email = email_address
         self.password = app_password
         self.running = False
         self.imap = None
-        self.last_uid = None
+        self.start_uid = None  # UID when monitoring started
+        self.last_notified_uid = None  # Last UID we notified about
         self.state_file = "gmail_state.json"
         
-    def _get_last_uid(self):
-        """Get the last processed UID from file"""
+    def _get_state(self):
+        """Get state from file"""
         try:
             if os.path.exists(self.state_file):
                 with open(self.state_file, 'r') as f:
-                    data = json.load(f)
-                    return data.get('last_uid')
-        except Exception as e:
-            logger.debug(f"Could not read state file: {e}")
-        return None
+                    return json.load(f)
+        except:
+            pass
+        return {}
     
-    def _save_last_uid(self, uid):
-        """Save last processed UID to file"""
+    def _save_state(self, start_uid=None, last_notified_uid=None):
+        """Save state to file"""
         try:
+            state = self._get_state()
+            if start_uid is not None:
+                state['start_uid'] = start_uid
+            if last_notified_uid is not None:
+                state['last_notified_uid'] = last_notified_uid
+            
             with open(self.state_file, 'w') as f:
-                json.dump({'last_uid': uid}, f)
+                json.dump(state, f)
         except Exception as e:
-            logger.error(f"Error saving state file: {e}")
+            logger.error(f"Error saving state: {e}")
     
     def connect(self) -> bool:
         """Connect to Gmail IMAP server"""
@@ -51,17 +57,23 @@ class GmailIMAPWatcher:
             self.imap.select('INBOX')
             
             # Get current highest UID to establish baseline
-            try:
-                result, data = self.imap.uid('search', None, 'ALL')
-                if result == 'OK' and data[0]:
-                    uids = data[0].split()
-                    if uids:
-                        self.last_uid = int(uids[-1])
-                        logger.info(f"📧 Starting UID: {self.last_uid}")
-                        self._save_last_uid(self.last_uid)
-            except Exception as e:
-                logger.warning(f"Could not get baseline UID: {e}")
-                self.last_uid = 0
+            result, data = self.imap.uid('search', None, 'ALL')
+            if result == 'OK' and data[0]:
+                uids = data[0].split()
+                if uids:
+                    current_max_uid = int(uids[-1])
+                    
+                    # If we haven't set start_uid yet (first run), set it to current max
+                    if self.start_uid is None:
+                        self.start_uid = current_max_uid
+                        self._save_state(start_uid=self.start_uid)
+                        logger.info(f"📧 Monitoring STARTED at UID: {self.start_uid}")
+                    
+                    # Load last notified UID from state
+                    state = self._get_state()
+                    self.last_notified_uid = state.get('last_notified_uid', self.start_uid)
+                    
+                    logger.info(f"📊 UID Status: Start={self.start_uid}, Last Notified={self.last_notified_uid}, Current={current_max_uid}")
             
             logger.info("✅ Gmail connected successfully")
             return True
@@ -145,15 +157,14 @@ class GmailIMAPWatcher:
             logger.error(f"Error parsing email: {e}")
             return None
     
-    def check_for_new_emails(self):
-        """Check for NEW emails since last UID"""
-        if not self.imap or self.last_uid is None:
+    def get_new_emails_since_last_notified(self):
+        """Get emails with UID > last_notified_uid"""
+        if not self.imap or self.last_notified_uid is None:
             return []
         
         try:
-            # Search for emails with UID greater than last_uid
-            # This ensures we only get NEW emails, not old unread ones
-            search_criteria = f"UID {self.last_uid + 1}:*"
+            # Search for emails with UID greater than last_notified_uid
+            search_criteria = f"UID {self.last_notified_uid + 1}:*"
             result, data = self.imap.uid('search', None, search_criteria)
             
             if result != 'OK' or not data[0]:
@@ -165,13 +176,17 @@ class GmailIMAPWatcher:
             
             new_emails = []
             
-            # Process from oldest to newest
+            # Process all new emails
             for uid_bytes in new_uids:
                 try:
-                    uid = uid_bytes.decode()
+                    uid = int(uid_bytes.decode())
+                    
+                    # Skip emails that arrived before monitoring started
+                    if uid <= self.start_uid:
+                        continue
                     
                     # Fetch the email
-                    result, msg_data = self.imap.uid('fetch', uid, '(RFC822)')
+                    result, msg_data = self.imap.uid('fetch', uid_bytes, '(RFC822)')
                     if result != 'OK' or not msg_data:
                         continue
                     
@@ -190,15 +205,12 @@ class GmailIMAPWatcher:
                     logger.error(f"Error processing email: {e}")
                     continue
             
-            # Update last_uid to the newest one
-            if new_emails and new_uids:
-                try:
-                    latest_uid = max(int(uid.decode()) for uid in new_uids)
-                    self.last_uid = latest_uid
-                    self._save_last_uid(self.last_uid)
-                    logger.info(f"📬 Updated last UID to: {self.last_uid} ({len(new_emails)} new emails)")
-                except Exception as e:
-                    logger.error(f"Error updating UID: {e}")
+            # Update last_notified_uid if we found new emails
+            if new_emails:
+                latest_uid = max(email['uid'] for email in new_emails)
+                self.last_notified_uid = latest_uid
+                self._save_state(last_notified_uid=self.last_notified_uid)
+                logger.info(f"📬 Updated last notified UID to: {self.last_notified_uid}")
             
             return new_emails
             
@@ -206,7 +218,7 @@ class GmailIMAPWatcher:
             logger.error(f"Error checking new emails: {e}")
             return []
     
-    def get_unread_emails(self, max_results: int = 5):
+    def get_recent_unread_emails(self, max_results: int = 5):
         """Get recent unread emails for manual check"""
         try:
             if not self.imap:
@@ -217,7 +229,7 @@ class GmailIMAPWatcher:
             if result != 'OK' or not data[0]:
                 return []
             
-            uids = data[0].split()[-max_results:]  # Get last N emails
+            uids = data[0].split()[-max_results:]
             
             emails = []
             for uid in uids:
@@ -227,6 +239,14 @@ class GmailIMAPWatcher:
                         email_bytes = msg_data[0][1]
                         email_data = self.parse_email_data(email_bytes)
                         if email_data:
+                            # Get UID for this email
+                            result, uid_data = self.imap.fetch(uid, '(UID)')
+                            if result == 'OK' and uid_data:
+                                # Extract UID from response
+                                uid_response = uid_data[0].decode()
+                                if 'UID' in uid_response:
+                                    email_uid = int(uid_response.split()[-1].strip(')'))
+                                    email_data['uid'] = email_uid
                             emails.append(email_data)
                 except Exception as e:
                     logger.error(f"Error fetching email: {e}")
@@ -238,47 +258,41 @@ class GmailIMAPWatcher:
             return []
     
     async def monitor_loop(self, callback_func, check_interval: int = 20):
-        """20-second polling loop for NEW emails only"""
+        """Monitor loop with proper UID tracking"""
         self.running = True
         
-        # Load last UID from previous session
-        saved_uid = self._get_last_uid()
-        if saved_uid:
-            try:
-                self.last_uid = int(saved_uid)
-                logger.info(f"📧 Resuming from UID: {self.last_uid}")
-            except:
-                self.last_uid = 0
-        else:
-            self.last_uid = 0
+        # Load state
+        state = self._get_state()
+        self.start_uid = state.get('start_uid')
+        self.last_notified_uid = state.get('last_notified_uid')
         
         # Connect to Gmail
         if not self.connect():
             return False
         
-        logger.info(f"🚀 Starting 20-second polling for NEW emails")
-        logger.info(f"📧 Will only notify about emails arriving AFTER this point")
+        logger.info(f"🚀 Starting monitoring with UID tracking")
+        logger.info(f"📧 Start UID: {self.start_uid}, Last Notified: {self.last_notified_uid}")
         
         consecutive_errors = 0
         max_errors = 5
         
         while self.running and consecutive_errors < max_errors:
             try:
-                # Check for NEW emails (since last UID)
-                new_emails = self.check_for_new_emails()
+                # Get emails since last notified UID
+                new_emails = self.get_new_emails_since_last_notified()
                 
                 if new_emails:
-                    logger.info(f"📨 Found {len(new_emails)} new email(s)")
+                    logger.info(f"📨 Found {len(new_emails)} new email(s) to notify")
                     
                     # Process each new email
                     for email_data in new_emails:
-                        logger.info(f"  • {email_data['sender_email']}: {email_data['subject'][:50]}...")
+                        logger.info(f"  • UID {email_data['uid']}: {email_data['subject'][:50]}...")
                         try:
                             await callback_func(email_data)
                         except Exception as e:
                             logger.error(f"Callback error: {e}")
                 else:
-                    # No new emails - this is normal, don't log every time
+                    # No new emails - normal case
                     pass
                 
                 # Send NOOP to keep connection alive
@@ -288,7 +302,7 @@ class GmailIMAPWatcher:
                 # Reset error counter
                 consecutive_errors = 0
                 
-                # Wait for next check (20 seconds)
+                # Wait for next check
                 await asyncio.sleep(check_interval)
                 
             except Exception as e:
@@ -308,3 +322,25 @@ class GmailIMAPWatcher:
         
         self.disconnect()
         return True
+    
+    def reset_monitoring(self):
+        """Reset monitoring to start from current UID"""
+        try:
+            if self.connect():
+                result, data = self.imap.uid('search', None, 'ALL')
+                if result == 'OK' and data[0]:
+                    uids = data[0].split()
+                    if uids:
+                        current_max_uid = int(uids[-1])
+                        self.start_uid = current_max_uid
+                        self.last_notified_uid = current_max_uid
+                        self._save_state(
+                            start_uid=self.start_uid,
+                            last_notified_uid=self.last_notified_uid
+                        )
+                        logger.info(f"🔄 Reset monitoring to UID: {current_max_uid}")
+                        return True
+        except Exception as e:
+            logger.error(f"Error resetting monitoring: {e}")
+        
+        return False
