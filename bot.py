@@ -803,7 +803,7 @@ class TelegramBotWithDatabaseMemory:
             application.add_handler(CommandHandler("gmail_stop", self.gmail_stop_command))
             #application.add_handler(CommandHandler("gmail_status", self.gmail_status_command))
             application.add_handler(CommandHandler("check_email", self.check_email_command))
-            application.add_handler(CommandHandler("gmail_reset", self.gmail_reset_command))
+            #application.add_handler(CommandHandler("gmail_reset", self.gmail_reset_command))
             application.add_handler(CommandHandler("gmail_stats", self.gmail_stats_command))
             application.add_handler(CommandHandler("gmail_cleanup", self.gmail_cleanup_command))
 
