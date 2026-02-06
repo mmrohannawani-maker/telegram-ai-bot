@@ -138,7 +138,7 @@ class TelegramBotWithDatabaseMemory:
             raise ValueError("Set OPENROUTER_API_KEY in .env")
         
         # Initialize database
-        self.db = MemoryDatabase()
+        self.db = MemoryDatabase("bot_memory.db")
         
         # Initialize OpenRouter client
         self.llm = OpenRouterClient(
