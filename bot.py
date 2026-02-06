@@ -801,7 +801,7 @@ class TelegramBotWithDatabaseMemory:
             # ✅ ADD GMAIL COMMAND HANDLERS:
             application.add_handler(CommandHandler("gmail_start", self.gmail_start_command))
             application.add_handler(CommandHandler("gmail_stop", self.gmail_stop_command))
-            application.add_handler(CommandHandler("gmail_status", self.gmail_status_command))
+            #application.add_handler(CommandHandler("gmail_status", self.gmail_status_command))
             application.add_handler(CommandHandler("check_email", self.check_email_command))
             application.add_handler(CommandHandler("gmail_reset", self.gmail_reset_command))
             application.add_handler(CommandHandler("gmail_stats", self.gmail_stats_command))
@@ -827,7 +827,7 @@ class TelegramBotWithDatabaseMemory:
             print("   /broadcast_scheduled - Admin: Start for all users")
             print("   /gmail_start - Start monitoring")
             print("   /gmail_stop - Stop monitoring")
-            print("   /gmail_status - Check status")
+            #print("   /gmail_status - Check status")
             print("   /check_email - Manual check")
             print("="*60)
             
