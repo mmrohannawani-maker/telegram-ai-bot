@@ -1,9 +1,8 @@
-# gmail_imap.py - FIXED UID TRACKING
+# gmail_imap.py - DATABASE-BASED TRACKING
 import asyncio
 import imaplib
 import email
-import json
-import os
+import hashlib
 import time
 from email.header import decode_header
 from datetime import datetime
@@ -13,40 +12,21 @@ import logging
 logger = logging.getLogger(__name__)
 
 class GmailIMAPWatcher:
-    """Gmail watcher with proper UID tracking"""
+    """Gmail watcher with database tracking"""
     
-    def __init__(self, email_address: str, app_password: str):
+    def __init__(self, email_address: str, app_password: str, db, user_id: str):
         self.email = email_address
         self.password = app_password
+        self.db = db
+        self.user_id = user_id
         self.running = False
         self.imap = None
-        self.start_uid = None  # UID when monitoring started
-        self.last_notified_uid = None  # Last UID we notified about
-        self.state_file = "gmail_state.json"
         
-    def _get_state(self):
-        """Get state from file"""
-        try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file, 'r') as f:
-                    return json.load(f)
-        except:
-            pass
-        return {}
-    
-    def _save_state(self, start_uid=None, last_notified_uid=None):
-        """Save state to file"""
-        try:
-            state = self._get_state()
-            if start_uid is not None:
-                state['start_uid'] = start_uid
-            if last_notified_uid is not None:
-                state['last_notified_uid'] = last_notified_uid
-            
-            with open(self.state_file, 'w') as f:
-                json.dump(state, f)
-        except Exception as e:
-            logger.error(f"Error saving state: {e}")
+    def generate_email_id(self, email_data: dict) -> str:
+        """Generate unique ID for email based on content"""
+        # Create a hash of sender + subject + date to identify unique emails
+        content = f"{email_data.get('sender_email', '')}:{email_data.get('subject', '')}:{email_data.get('date', '')}"
+        return hashlib.md5(content.encode()).hexdigest()
     
     def connect(self) -> bool:
         """Connect to Gmail IMAP server"""
@@ -55,26 +35,6 @@ class GmailIMAPWatcher:
             self.imap = imaplib.IMAP4_SSL('imap.gmail.com', 993, timeout=15)
             self.imap.login(self.email, self.password)
             self.imap.select('INBOX')
-            
-            # Get current highest UID to establish baseline
-            result, data = self.imap.uid('search', None, 'ALL')
-            if result == 'OK' and data[0]:
-                uids = data[0].split()
-                if uids:
-                    current_max_uid = int(uids[-1])
-                    
-                    # If we haven't set start_uid yet (first run), set it to current max
-                    if self.start_uid is None:
-                        self.start_uid = current_max_uid
-                        self._save_state(start_uid=self.start_uid)
-                        logger.info(f"📧 Monitoring STARTED at UID: {self.start_uid}")
-                    
-                    # Load last notified UID from state
-                    state = self._get_state()
-                    self.last_notified_uid = state.get('last_notified_uid', self.start_uid)
-                    
-                    logger.info(f"📊 UID Status: Start={self.start_uid}, Last Notified={self.last_notified_uid}, Current={current_max_uid}")
-            
             logger.info("✅ Gmail connected successfully")
             return True
         except Exception as e:
@@ -144,7 +104,7 @@ class GmailIMAPWatcher:
                         has_attachments = True
                         break
             
-            return {
+            email_data = {
                 'from': from_header,
                 'sender_email': sender_email,
                 'subject': subject,
@@ -153,64 +113,66 @@ class GmailIMAPWatcher:
                 'has_attachments': has_attachments
             }
             
+            # Generate unique ID for this email
+            email_data['email_id'] = self.generate_email_id(email_data)
+            
+            return email_data
+            
         except Exception as e:
             logger.error(f"Error parsing email: {e}")
             return None
     
-    def get_new_emails_since_last_notified(self):
-        """Get emails with UID > last_notified_uid"""
-        if not self.imap or self.last_notified_uid is None:
-            return []
-        
+    def get_recent_emails(self, max_results: int = 10):
+        """Get recent emails (read or unread)"""
         try:
-            # Search for emails with UID greater than last_notified_uid
-            search_criteria = f"UID {self.last_notified_uid + 1}:*"
-            result, data = self.imap.uid('search', None, search_criteria)
+            if not self.imap:
+                return []
             
+            # Search for ALL recent emails (not just unread)
+            result, data = self.imap.search(None, 'ALL')
             if result != 'OK' or not data[0]:
                 return []
             
-            new_uids = data[0].split()
-            if not new_uids:
-                return []
+            # Get the most recent emails
+            all_uids = data[0].split()
+            recent_uids = all_uids[-max_results:] if len(all_uids) > max_results else all_uids
             
-            new_emails = []
-            
-            # Process all new emails
-            for uid_bytes in new_uids:
+            emails = []
+            for uid in recent_uids:
                 try:
-                    uid = int(uid_bytes.decode())
-                    
-                    # Skip emails that arrived before monitoring started
-                    if uid <= self.start_uid:
-                        continue
-                    
-                    # Fetch the email
-                    result, msg_data = self.imap.uid('fetch', uid_bytes, '(RFC822)')
-                    if result != 'OK' or not msg_data:
-                        continue
-                    
-                    # Parse the email
-                    if isinstance(msg_data[0], tuple) and len(msg_data[0]) > 1:
+                    result, msg_data = self.imap.fetch(uid, '(RFC822)')
+                    if result == 'OK' and msg_data and isinstance(msg_data[0], tuple):
                         email_bytes = msg_data[0][1]
-                    else:
-                        continue
-                    
-                    email_data = self.parse_email_data(email_bytes)
-                    if email_data:
-                        email_data['uid'] = uid
-                        new_emails.append(email_data)
-                        
+                        email_data = self.parse_email_data(email_bytes)
+                        if email_data:
+                            emails.append(email_data)
                 except Exception as e:
-                    logger.error(f"Error processing email: {e}")
+                    logger.error(f"Error fetching email: {e}")
                     continue
             
-            # Update last_notified_uid if we found new emails
-            if new_emails:
-                latest_uid = max(email['uid'] for email in new_emails)
-                self.last_notified_uid = latest_uid
-                self._save_state(last_notified_uid=self.last_notified_uid)
-                logger.info(f"📬 Updated last notified UID to: {self.last_notified_uid}")
+            return emails
+            
+        except Exception as e:
+            logger.error(f"Error getting recent emails: {e}")
+            return []
+    
+    def get_new_emails_since_last_check(self):
+        """Get emails that haven't been sent to user yet"""
+        if not self.imap:
+            return []
+        
+        try:
+            # Get recent emails
+            recent_emails = self.get_recent_emails(max_results=20)
+            
+            # Filter out emails already sent to this user
+            new_emails = []
+            for email_data in recent_emails:
+                email_id = email_data.get('email_id')
+                
+                # Check database if this email was already sent to user
+                if email_id and not self.db.is_email_already_sent(email_id, self.user_id):
+                    new_emails.append(email_data)
             
             return new_emails
             
@@ -218,84 +180,59 @@ class GmailIMAPWatcher:
             logger.error(f"Error checking new emails: {e}")
             return []
     
-    def get_recent_unread_emails(self, max_results: int = 5):
-        """Get recent unread emails for manual check"""
-        try:
-            if not self.imap:
-                return []
-            
-            # Search for unread emails
-            result, data = self.imap.search(None, 'UNSEEN')
-            if result != 'OK' or not data[0]:
-                return []
-            
-            uids = data[0].split()[-max_results:]
-            
-            emails = []
-            for uid in uids:
-                try:
-                    result, msg_data = self.imap.fetch(uid, '(RFC822)')
-                    if result == 'OK' and msg_data and isinstance(msg_data[0], tuple):
-                        email_bytes = msg_data[0][1]
-                        email_data = self.parse_email_data(email_bytes)
-                        if email_data:
-                            # Get UID for this email
-                            result, uid_data = self.imap.fetch(uid, '(UID)')
-                            if result == 'OK' and uid_data:
-                                # Extract UID from response
-                                uid_response = uid_data[0].decode()
-                                if 'UID' in uid_response:
-                                    email_uid = int(uid_response.split()[-1].strip(')'))
-                                    email_data['uid'] = email_uid
-                            emails.append(email_data)
-                except Exception as e:
-                    logger.error(f"Error fetching email: {e}")
-            
-            return emails
-            
-        except Exception as e:
-            logger.error(f"Error getting unread emails: {e}")
-            return []
-    
-    async def monitor_loop(self, callback_func, check_interval: int = 20):
-        """Monitor loop with proper UID tracking"""
+    async def monitor_with_database(self, callback_func, check_interval: int = 20):
+        """Monitor using database for tracking"""
         self.running = True
-        
-        # Load state
-        state = self._get_state()
-        self.start_uid = state.get('start_uid')
-        self.last_notified_uid = state.get('last_notified_uid')
         
         # Connect to Gmail
         if not self.connect():
             return False
         
-        logger.info(f"🚀 Starting monitoring with UID tracking")
-        logger.info(f"📧 Start UID: {self.start_uid}, Last Notified: {self.last_notified_uid}")
+        logger.info(f"🚀 Starting database-tracked monitoring for user {self.user_id}")
+        logger.info(f"📧 Will check every {check_interval}s for NEW emails")
+        
+        # Don't notify about existing emails on first run
+        logger.info("🔄 Skipping existing emails, only NEW ones will be notified")
         
         consecutive_errors = 0
         max_errors = 5
         
         while self.running and consecutive_errors < max_errors:
             try:
-                # Get emails since last notified UID
-                new_emails = self.get_new_emails_since_last_notified()
+                # Get emails that haven't been sent yet
+                new_emails = self.get_new_emails_since_last_check()
                 
                 if new_emails:
-                    logger.info(f"📨 Found {len(new_emails)} new email(s) to notify")
+                    logger.info(f"📨 Found {len(new_emails)} new email(s) for user {self.user_id}")
                     
                     # Process each new email
                     for email_data in new_emails:
-                        logger.info(f"  • UID {email_data['uid']}: {email_data['subject'][:50]}...")
+                        email_id = email_data.get('email_id')
+                        sender = email_data.get('sender_email', 'Unknown')
+                        subject = email_data.get('subject', 'No Subject')[:50]
+                        
+                        logger.info(f"  • New email from {sender}: {subject}...")
+                        
                         try:
+                            # Send notification
                             await callback_func(email_data)
+                            
+                            # Mark as sent in database (AFTER successful notification)
+                            self.db.mark_email_as_sent(
+                                email_id=email_id,
+                                sender_email=sender,
+                                subject=subject,
+                                user_id=self.user_id
+                            )
+                            logger.info(f"  ✅ Marked email {email_id[:8]}... as sent")
+                            
                         except Exception as e:
                             logger.error(f"Callback error: {e}")
                 else:
                     # No new emails - normal case
                     pass
                 
-                # Send NOOP to keep connection alive
+                # Keep connection alive
                 if self.imap:
                     self.imap.noop()
                 
@@ -310,7 +247,7 @@ class GmailIMAPWatcher:
                 logger.error(f"Monitoring error #{consecutive_errors}: {e}")
                 
                 if consecutive_errors < max_errors:
-                    # Wait longer between retries
+                    # Wait before retry
                     wait_time = min(30, 5 * consecutive_errors)
                     logger.warning(f"Waiting {wait_time}s before retry...")
                     await asyncio.sleep(wait_time)
@@ -322,25 +259,3 @@ class GmailIMAPWatcher:
         
         self.disconnect()
         return True
-    
-    def reset_monitoring(self):
-        """Reset monitoring to start from current UID"""
-        try:
-            if self.connect():
-                result, data = self.imap.uid('search', None, 'ALL')
-                if result == 'OK' and data[0]:
-                    uids = data[0].split()
-                    if uids:
-                        current_max_uid = int(uids[-1])
-                        self.start_uid = current_max_uid
-                        self.last_notified_uid = current_max_uid
-                        self._save_state(
-                            start_uid=self.start_uid,
-                            last_notified_uid=self.last_notified_uid
-                        )
-                        logger.info(f"🔄 Reset monitoring to UID: {current_max_uid}")
-                        return True
-        except Exception as e:
-            logger.error(f"Error resetting monitoring: {e}")
-        
-        return False

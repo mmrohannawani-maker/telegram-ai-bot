@@ -492,11 +492,26 @@ class TelegramBotWithDatabaseMemory:
             "Google Account → Security → App passwords"
             )
             return
+
+         # Create database table if not exists
+        self.db.create_gmail_tracking_table()
     
-        await update.message.reply_text("🚀 Starting PURE EVENT-BASED Gmail monitoring...")
+    # Cleanup old records (keep last 30 days)
+        self.db.cleanup_old_email_records(days=30)
+    
+    # Get stats
+        email_count = self.db.get_email_count_for_user(user_id)
+    
+        await update.message.reply_text(f"🚀 Starting database-tracked monitoring...")
+       # await update.message.reply_text("🚀 Starting PURE EVENT-BASED Gmail monitoring...")
     
         # Create Gmail watcher
-        self.gmail_watcher = GmailIMAPWatcher(gmail_email, gmail_password)
+        self.gmail_watcher = GmailIMAPWatcher(
+        email_address=gmail_email,
+        app_password=gmail_password,
+        db=self.db,
+        user_id=user_id
+        )
     
         # Store which user to notify
         self.gmail_monitor_user = user_id
@@ -505,19 +520,20 @@ class TelegramBotWithDatabaseMemory:
         asyncio.create_task(self._start_gmail_monitoring())
     
         await update.message.reply_text(
-        "✅ **PURE EVENT-BASED Gmail monitoring started!**\n\n"
-        "🔔 *True instant notifications*\n"
-        "📧 Using IMAP IDLE protocol\n"
-        "⏰ No polling intervals\n"
-        "⚡ Notifies INSTANTLY when email arrives\n\n"
-        "Use /gmail_stop to stop monitoring."
-        )
-
-    async def _start_gmail_monitoring(self):
-        """Start Gmail monitoring"""
+        f"✅ **Database-tracked monitoring started!**\n\n"
+        f"📊 Previously sent: {email_count} emails\n"
+        f"🔔 *20-second checks*\n"
+        f"📧 *Only NEW emails will be notified*\n"
+        f"💾 *Database-backed tracking*\n"
+        f"⚡ No duplicate notifications\n\n"
+        f"Use /gmail_stop to stop monitoring."
+    )
+        
+    async def _start_database_monitoring(self):
+        """Start database-tracked monitoring"""
         try:
-            # Use 20-second polling for new emails only
-            await self.gmail_watcher.monitor_loop(
+        # Use database-based monitoring
+            await self.gmail_watcher.monitor_with_database(
                 callback_func=self.gmail_callback,
                 check_interval=20  # 20-second checks
             )
@@ -532,34 +548,60 @@ class TelegramBotWithDatabaseMemory:
                 except:
                     pass
 
-    async def gmail_reset_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Reset Gmail monitoring to start from current emails"""
+    async def gmail_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show Gmail monitoring stats"""
+        user_id = str(update.effective_user.id)
+    
+        email_count = self.db.get_email_count_for_user(user_id)
+        last_email_time = self.db.get_last_email_time(user_id)
+    
+        if last_email_time:
+            last_time = f"Last email: {last_email_time}"
+        else:
+            last_time = "No emails sent yet"
+    
+            if self.gmail_watcher and hasattr(self.gmail_watcher, 'running') and self.gmail_watcher.running:
+                status = "✅ **ACTIVE** - Monitoring with database tracking"
+            else:
+                status = "❌ **INACTIVE** - Use /gmail_start to begin"
+    
+        response = (
+        f"📊 **Gmail Monitoring Stats**\n\n"
+        f"{status}\n"
+        f"📧 Emails sent to you: {email_count}\n"
+        f"{last_time}\n\n"
+        f"🔧 **Commands:**\n"
+        f"/gmail_start - Start monitoring\n"
+        f"/gmail_stop - Stop monitoring\n"
+        f"/gmail_stats - Show stats\n"
+        f"/gmail_cleanup - Cleanup old records\n"
+        f"/check_email - Manual check"
+        )
+    
+        await update.message.reply_text(response, parse_mode='Markdown')
+
+    async def gmail_cleanup_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Cleanup old email records"""
+        user_id = str(update.effective_user.id)
+    
         if self.gmail_watcher and hasattr(self.gmail_watcher, 'running') and self.gmail_watcher.running:
             await update.message.reply_text("⚠️ Stop monitoring first with /gmail_stop")
             return
     
-        await update.message.reply_text("🔄 Resetting Gmail monitoring...")
+        await update.message.reply_text("🧹 Cleaning up old email records...")
     
-        gmail_email = os.getenv("GMAIL_EMAIL")
-        gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+        # Cleanup records older than 30 days
+        deleted = self.db.cleanup_old_email_records(days=30)
     
-        if not gmail_email or not gmail_password:
-            await update.message.reply_text("❌ Gmail not configured.")
-            return
+    # Also cleanup for this specific user
+        email_count = self.db.get_email_count_for_user(user_id)
     
-        # Create new watcher
-        self.gmail_watcher = GmailIMAPWatcher(gmail_email, gmail_password)
-    
-        if self.gmail_watcher.reset_monitoring():
-            await update.message.reply_text(
-                "✅ **Gmail monitoring reset!**\n\n"
-                "📧 Monitoring will start from NOW\n"
-                "🔔 Future emails will be notified\n"
-                "⏰ Use /gmail_start to begin"
-            )
-        else:
-            await update.message.reply_text("❌ Failed to reset monitoring")
-
+        await update.message.reply_text(
+        f"✅ **Cleanup completed!**\n\n"
+        f"🗑️ Deleted: {deleted} old records\n"
+        f"📧 Your current emails: {email_count}\n\n"
+        f"Database has been cleaned up."
+        )
 
     async def gmail_stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Stop Gmail monitoring"""
@@ -575,58 +617,55 @@ class TelegramBotWithDatabaseMemory:
         await update.message.reply_text("🛑 Gmail monitoring stopped.")
         logger.info("Gmail monitoring stopped by user")
 
-    async def gmail_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Check Gmail status"""
-        if self.gmail_watcher and hasattr(self.gmail_watcher, 'running') and self.gmail_watcher.running:
-            status = "✅ **ACTIVE** - Monitoring for NEW emails\n⏰ 20-second polling"
-        else:
-            status = "❌ **INACTIVE** - Use /gmail_start to begin"
-    
-        response = (
-        f"📧 **Gmail Monitor Status**\n"
-        f"{status}\n\n"
-        f"🔧 **Commands:**\n"
-        f"/gmail_start - Start monitoring\n"
-        f"/gmail_stop - Stop monitoring\n"
-        f"/gmail_status - Check status\n"
-        f"/check_email - Manual check"
-        )
-    
-        await update.message.reply_text(response, parse_mode='Markdown')
-
     async def check_email_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Manually check for unread emails"""
+        """Manually check for recent emails (doesn't mark as sent)"""
         gmail_email = os.getenv("GMAIL_EMAIL")
         gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+        user_id = str(update.effective_user.id)
     
         if not gmail_email or not gmail_password:
             await update.message.reply_text("❌ Gmail not configured.")
             return
     
-        await update.message.reply_text("📬 Checking for unread emails...")
+        await update.message.reply_text("📬 Checking recent emails...")
     
-        # Create temporary watcher
-        watcher = GmailIMAPWatcher(gmail_email, gmail_password)
+    # Create temporary watcher
+        watcher = GmailIMAPWatcher(gmail_email, gmail_password, self.db, user_id)
     
         if watcher.connect():
-            emails = watcher.get_unread_emails(max_results=5)
+        # Get recent emails (won't mark as sent in database)
+            emails = watcher.get_recent_emails(max_results=5)
             watcher.disconnect()
         
             if not emails:
-                await update.message.reply_text("📭 No unread emails found.")
+                await update.message.reply_text("📭 No recent emails found.")
                 return
         
-            # Format response
-            response = f"📧 **Unread Emails** ({len(emails)}):\n\n"
-            for i, email in enumerate(emails, 1):
-                response += f"{i}. **{email.get('sender_email', 'Unknown')}**\n"
+        # Filter out emails already sent
+            unsent_emails = []
+            for email in emails:
+                email_id = email.get('email_id')
+                if email_id and not self.db.is_email_already_sent(email_id, user_id):
+                    unsent_emails.append(email)
+        
+            if not unsent_emails:
+                await update.message.reply_text("📭 No new emails found (all recent emails already notified).")
+                return
+        
+        # Format response
+            response = f"📧 **Recent Emails ({len(unsent_emails)} new)**\n\n"
+            for i, email in enumerate(unsent_emails, 1):
+                is_new = "🆕" if not self.db.is_email_already_sent(email.get('email_id', ''), user_id) else ""
+                response += f"{i}. {is_new} **{email.get('sender_email', 'Unknown')}**\n"
                 response += f"   *Subject:* {email.get('subject', 'No Subject')[:50]}\n"
                 response += f"   *Time:* {email.get('date', 'Unknown')[:20]}\n\n"
         
             await update.message.reply_text(response, parse_mode='Markdown')
         else:
             await update.message.reply_text("❌ Failed to connect to Gmail.")
+    
 
+   
 
 
 
@@ -765,6 +804,8 @@ class TelegramBotWithDatabaseMemory:
             application.add_handler(CommandHandler("gmail_status", self.gmail_status_command))
             application.add_handler(CommandHandler("check_email", self.check_email_command))
             application.add_handler(CommandHandler("gmail_reset", self.gmail_reset_command))
+            application.add_handler(CommandHandler("gmail_stats", self.gmail_stats_command))
+            application.add_handler(CommandHandler("gmail_cleanup", self.gmail_cleanup_command))
 
 
 

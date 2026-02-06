@@ -392,6 +392,98 @@ class MemoryDatabase:
         except Exception as e:
             logger.error(f"Error getting database stats: {e}")
             return {}
+        
+
+    
+    def create_gmail_tracking_table(self):
+        """Create table to track sent emails"""
+        if self.db_type == "sqlite":
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS gmail_tracking (
+                    email_id TEXT PRIMARY KEY,
+                    sender_email TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    notified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    user_id TEXT NOT NULL
+                )
+            ''')
+        else:  # PostgreSQL
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS gmail_tracking (
+                    email_id TEXT PRIMARY KEY,
+                    sender_email TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    notified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    user_id TEXT NOT NULL
+                )
+            ''')
+        self.conn.commit()
+        print("✅ Gmail tracking table created")
+    
+    def is_email_already_sent(self, email_id: str, user_id: str) -> bool:
+        """Check if email has already been sent to user"""
+        self.cursor.execute(
+            "SELECT 1 FROM gmail_tracking WHERE email_id = ? AND user_id = ?",
+            (email_id, user_id)
+        )
+        return self.cursor.fetchone() is not None
+    
+    def mark_email_as_sent(self, email_id: str, sender_email: str, subject: str, user_id: str):
+        """Mark email as sent to user"""
+        try:
+            self.cursor.execute(
+                '''INSERT INTO gmail_tracking 
+                   (email_id, sender_email, subject, user_id) 
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT (email_id) DO NOTHING''',
+                (email_id, sender_email, subject, user_id)
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error marking email as sent: {e}")
+            return False
+    
+    def get_last_email_time(self, user_id: str):
+        """Get time of last email sent to user"""
+        self.cursor.execute(
+            "SELECT MAX(notified_at) FROM gmail_tracking WHERE user_id = ?",
+            (user_id,)
+        )
+        result = self.cursor.fetchone()
+        return result[0] if result and result[0] else None
+    
+    def get_email_count_for_user(self, user_id: str) -> int:
+        """Get count of emails sent to user"""
+        self.cursor.execute(
+            "SELECT COUNT(*) FROM gmail_tracking WHERE user_id = ?",
+            (user_id,)
+        )
+        result = self.cursor.fetchone()
+        return result[0] if result else 0
+    
+    def cleanup_old_email_records(self, days: int = 30):
+        """Cleanup old email records"""
+        try:
+            if self.db_type == "sqlite":
+                self.cursor.execute(
+                    "DELETE FROM gmail_tracking WHERE notified_at < datetime('now', ?)",
+                    (f'-{days} days',)
+                )
+            else:  # PostgreSQL
+                self.cursor.execute(
+                    "DELETE FROM gmail_tracking WHERE notified_at < NOW() - INTERVAL '%s days'",
+                    (days,)
+                )
+            self.conn.commit()
+            deleted = self.cursor.rowcount
+            print(f"🧹 Cleaned up {deleted} old email records")
+            return deleted
+        except Exception as e:
+            print(f"Error cleaning up email records: {e}")
+            return 0
     
     def close(self):
         """Close database connection"""
